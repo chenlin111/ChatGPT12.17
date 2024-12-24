@@ -317,6 +317,7 @@ const openaiModels = [
 ];
 
 const googleModels = [
+  "Gemini-2.0-Flash-Experimental",
   "gemini-2.0-flash-exp",
   "gemini-1.0-pro",
   "gemini-1.5-pro-latest",
