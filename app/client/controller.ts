@@ -1,3 +1,7 @@
+// client/controller.ts
+import { api, Api } from "./api";
+import { ChatMessage } from "@/types";
+
 // To store message streaming controller
 export const ChatControllerPool = {
   controllers: {} as Record<string, AbortController>,
@@ -35,3 +39,10 @@ export const ChatControllerPool = {
     return `${sessionId},${messageIndex}`;
   },
 };
+export const controller = {
+  sendMessage: async (message: string): Promise<AsyncGenerator<string>> => {
+    return api.google.generateGeminiStream(message);
+  },
+};
+
+export type Controller = typeof controller;

@@ -3,8 +3,29 @@ import { auth } from "./auth";
 import { getServerSideConfig } from "@/app/config/server";
 import { ApiPath, GEMINI_BASE_URL, ModelProvider } from "@/app/constant";
 import { prettyObject } from "@/app/utils/format";
+import { genai } from 'google-genai';
 
 const serverConfig = getServerSideConfig();
+const apiKey = process.env.GEMINI_API_KEY;
+if (!apiKey) {
+  throw new Error('GEMINI_API_KEY is not defined');
+}
+const client = new genai.Client({apiKey});
+
+async function generateContentStream(userMessage: string): Promise<AsyncGenerator<string>> {
+    const modelId = "gemini-2.0-flash-exp";
+    const config = { "response_modalities": ["TEXT"] };
+    const session = await client.live.connect({ model: modelId, config: config });
+    await session.send(userMessage);
+    async function* streamGenerator(): AsyncGenerator<string> {
+      for await (const response of session) {
+        if(response?.text){
+          yield response.text;
+        }
+      }
+    }
+    return streamGenerator();
+}
 
 export async function handle(
   req: NextRequest,
@@ -40,13 +61,13 @@ export async function handle(
       },
     );
   }
-  try {
-    const response = await request(req, apiKey);
-    return response;
-  } catch (e) {
-    console.error("[Google] ", e);
-    return NextResponse.json(prettyObject(e));
-  }
+    try {
+        const response = await request(req, apiKey, params.path);
+        return response;
+    } catch (e) {
+        console.error("[Google] ", e);
+        return NextResponse.json(prettyObject(e));
+    }
 }
 
 export const GET = handle;
@@ -68,66 +89,101 @@ export const preferredRegion = [
   "syd1",
 ];
 
-async function request(req: NextRequest, apiKey: string) {
-  const controller = new AbortController();
+async function request(req: NextRequest, apiKey: string, path: string[]) {
+    if (path.join("/").includes("gemini")) {
+        try {
+            const { message } = await req.json();
+            if (!message) {
+                return NextResponse.json({ error: "Message is required" }, { status: 400 });
+            }
+            const stream = await generateContentStream(message);
 
-  let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
+            return new NextResponse(
+                new ReadableStream({
+                    async start(controller) {
+                        try {
+                            for await (const chunk of stream) {
+                                controller.enqueue(new TextEncoder().encode(chunk));
+                            }
+                            controller.close();
+                        } catch (error) {
+                            console.error("Stream error:", error);
+                            controller.error(error);
+                        }
+                    }
+                }),
+                {
+                    headers: {
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                    },
+                }
+            );
+        } catch (error: any) {
+            console.error("API error:", error);
+            return NextResponse.json({ error: error.message }, { status: 500 });
+        }
+    } else {
+        const controller = new AbortController();
 
-  let path = `${req.nextUrl.pathname}`.replaceAll(ApiPath.Google, "");
+        let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
 
-  if (!baseUrl.startsWith("http")) {
-    baseUrl = `https://${baseUrl}`;
-  }
+        let fetchPath = `${req.nextUrl.pathname}`.replaceAll(ApiPath.Google, "");
 
-  if (baseUrl.endsWith("/")) {
-    baseUrl = baseUrl.slice(0, -1);
-  }
+        if (!baseUrl.startsWith("http")) {
+            baseUrl = `https://${baseUrl}`;
+        }
 
-  console.log("[Proxy] ", path);
-  console.log("[Base Url]", baseUrl);
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.slice(0, -1);
+        }
 
-  const timeoutId = setTimeout(
-    () => {
-      controller.abort();
-    },
-    10 * 60 * 1000,
-  );
-  const fetchUrl = `${baseUrl}${path}${
-    req?.nextUrl?.searchParams?.get("alt") === "sse" ? "?alt=sse" : ""
-  }`;
+        console.log("[Proxy] ", fetchPath);
+        console.log("[Base Url]", baseUrl);
 
-  console.log("[Fetch Url] ", fetchUrl);
-  const fetchOptions: RequestInit = {
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-      "x-goog-api-key":
-        req.headers.get("x-goog-api-key") ||
-        (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
-    },
-    method: req.method,
-    body: req.body,
-    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
-    redirect: "manual",
-    // @ts-ignore
-    duplex: "half",
-    signal: controller.signal,
-  };
+        const timeoutId = setTimeout(
+          () => {
+            controller.abort();
+          },
+          10 * 60 * 1000,
+        );
+        const fetchUrl = `${baseUrl}${fetchPath}${
+          req?.nextUrl?.searchParams?.get("alt") === "sse" ? "?alt=sse" : ""
+        }`;
 
-  try {
-    const res = await fetch(fetchUrl, fetchOptions);
-    // to prevent browser prompt for credentials
-    const newHeaders = new Headers(res.headers);
-    newHeaders.delete("www-authenticate");
-    // to disable nginx buffering
-    newHeaders.set("X-Accel-Buffering", "no");
+        console.log("[Fetch Url] ", fetchUrl);
+        const fetchOptions: RequestInit = {
+            headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": "no-store",
+                "x-goog-api-key":
+                req.headers.get("x-goog-api-key") ||
+                (req.headers.get("Authorization") ?? "").replace("Bearer ", ""),
+            },
+            method: req.method,
+            body: req.body,
+            // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
+            redirect: "manual",
+            // @ts-ignore
+            duplex: "half",
+            signal: controller.signal,
+        };
 
-    return new Response(res.body, {
-      status: res.status,
-      statusText: res.statusText,
-      headers: newHeaders,
-    });
-  } finally {
-    clearTimeout(timeoutId);
-  }
+        try {
+            const res = await fetch(fetchUrl, fetchOptions);
+            // to prevent browser prompt for credentials
+            const newHeaders = new Headers(res.headers);
+            newHeaders.delete("www-authenticate");
+            // to disable nginx buffering
+            newHeaders.set("X-Accel-Buffering", "no");
+
+            return new Response(res.body, {
+                status: res.status,
+                statusText: res.statusText,
+                headers: newHeaders,
+            });
+        } finally {
+           clearTimeout(timeoutId);
+        }
+    }
 }

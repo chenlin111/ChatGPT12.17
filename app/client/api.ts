@@ -1,3 +1,4 @@
+// client/api.ts
 import { getClientConfig } from "../config/client";
 import {
   ACCESS_CODE_PREFIX,
@@ -102,6 +103,8 @@ export abstract class LLMApi {
   abstract speech(options: SpeechOptions): Promise<ArrayBuffer>;
   abstract usage(): Promise<LLMUsage>;
   abstract models(): Promise<LLMModel[]>;
+  // 添加 generateGeminiStream 方法的抽象定义
+    abstract generateGeminiStream(message: string): AsyncGenerator<string>;
 }
 
 type ProviderName = "openai" | "azure" | "claude" | "palm";
@@ -352,3 +355,9 @@ export function getClientApi(provider: ServiceProvider): ClientApi {
       return new ClientApi(ModelProvider.GPT);
   }
 }
+export const api = {
+  google: {
+    generateGeminiStream: (new GeminiProApi()).generateGeminiStream,
+  },
+};
+export type Api = typeof api;

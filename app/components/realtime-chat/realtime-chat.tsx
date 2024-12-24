@@ -1,16 +1,11 @@
+import React, { useState, useRef, useEffect } from "react";
 import VoiceIcon from "@/app/icons/voice.svg";
 import VoiceOffIcon from "@/app/icons/voice-off.svg";
 import PowerIcon from "@/app/icons/power.svg";
-
 import styles from "./realtime-chat.module.scss";
 import clsx from "clsx";
-
-import { useState, useRef, useEffect } from "react";
-
 import { useChatStore, createMessage, useAppConfig } from "@/app/store";
-
 import { IconButton } from "@/app/components/button";
-
 import {
   Modality,
   RTClient,
@@ -21,6 +16,8 @@ import {
 import { AudioHandler } from "@/app/lib/audio";
 import { uploadImage } from "@/app/utils/chat";
 import { VoicePrint } from "@/app/components/voice-print";
+import { ChatMessage } from "@/types"; // 引入 ChatMessage 类型
+import { Loading } from "@/app/components/loading"; // 引入加载组件
 
 interface RealtimeChatProps {
   onClose?: () => void;
@@ -43,6 +40,7 @@ export function RealtimeChat({
   const [modality, setModality] = useState("audio");
   const [useVAD, setUseVAD] = useState(true);
   const [frequencies, setFrequencies] = useState<Uint8Array | undefined>();
+  const [messages, setMessages] = useState<ChatMessage[]>([]); // 增加消息列表状态
 
   const clientRef = useRef<RTClient | null>(null);
   const audioHandlerRef = useRef<AudioHandler | null>(null);
@@ -56,11 +54,13 @@ export function RealtimeChat({
   const azureDeployment = config.realtimeConfig.azure.deployment;
   const voice = config.realtimeConfig.voice;
 
+  // 连接和断开连接函数
   const handleConnect = async () => {
     if (isConnecting) return;
     if (!isConnected) {
       try {
         setIsConnecting(true);
+        setStatus("Connecting...");
         clientRef.current = azure
           ? new RTClient(
               new URL(azureEndpoint),
@@ -83,33 +83,11 @@ export function RealtimeChat({
           modalities,
         });
         startResponseListener();
-
         setIsConnected(true);
-        // TODO
-        // try {
-        //   const recentMessages = chatStore.getMessagesWithMemory();
-        //   for (const message of recentMessages) {
-        //     const { role, content } = message;
-        //     if (typeof content === "string") {
-        //       await clientRef.current.sendItem({
-        //         type: "message",
-        //         role: role as any,
-        //         content: [
-        //           {
-        //             type: (role === "assistant" ? "text" : "input_text") as any,
-        //             text: content as string,
-        //           },
-        //         ],
-        //       });
-        //     }
-        //   }
-        //   // await clientRef.current.generateResponse();
-        // } catch (error) {
-        //   console.error("Set message failed:", error);
-        // }
-      } catch (error) {
+        setStatus("");
+      } catch (error: any) {
         console.error("Connection failed:", error);
-        setStatus("Connection failed");
+        setStatus(`Connection failed: ${error.message}`);
       } finally {
         setIsConnecting(false);
       }
@@ -121,15 +99,19 @@ export function RealtimeChat({
   const disconnect = async () => {
     if (clientRef.current) {
       try {
+        setStatus("Disconnecting...");
         await clientRef.current.close();
         clientRef.current = null;
         setIsConnected(false);
-      } catch (error) {
+        setStatus("");
+      } catch (error: any) {
         console.error("Disconnect failed:", error);
+        setStatus(`Disconnect failed: ${error.message}`);
       }
     }
   };
 
+  // 响应监听器
   const startResponseListener = async () => {
     if (!clientRef.current) return;
 
@@ -141,13 +123,15 @@ export function RealtimeChat({
           await handleInputAudio(serverEvent);
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       if (clientRef.current) {
         console.error("Response iteration error:", error);
+        setStatus(`Response iteration error: ${error.message}`);
       }
     }
   };
 
+  // 处理响应
   const handleResponse = async (response: RTResponse) => {
     for await (const item of response) {
       if (item.type === "message" && item.role === "assistant") {
@@ -160,15 +144,18 @@ export function RealtimeChat({
           session.messages = session.messages.concat([botMessage]);
         });
         let hasAudio = false;
+        let messageContent = ""; // 用于存储完整消息内容
         for await (const content of item) {
           if (content.type === "text") {
             for await (const text of content.textChunks()) {
-              botMessage.content += text;
+              messageContent += text; // 累加文本
+              botMessage.content = messageContent; // 更新消息内容
             }
           } else if (content.type === "audio") {
             const textTask = async () => {
               for await (const text of content.transcriptChunks()) {
-                botMessage.content += text;
+                messageContent += text;
+                botMessage.content = messageContent;
               }
             };
             const audioTask = async () => {
@@ -196,10 +183,12 @@ export function RealtimeChat({
             });
           });
         }
+        setMessages((prev) => [...prev, botMessage]);
       }
     }
   };
 
+  // 处理输入音频
   const handleInputAudio = async (item: RTInputAudioItem) => {
     await item.waitForCompletion();
     if (item.transcription) {
@@ -223,14 +212,17 @@ export function RealtimeChat({
           session.messages = session.messages.concat();
         });
       });
+      setMessages((prev) => [...prev, userMessage]); // 添加用户消息到消息列表
     }
     // stop streaming play after get input audio.
     audioHandlerRef.current?.stopStreamingPlayback();
   };
 
+  // 控制录音
   const toggleRecording = async () => {
     if (!isRecording && clientRef.current) {
       try {
+        setStatus("Starting recording...");
         if (!audioHandlerRef.current) {
           audioHandlerRef.current = new AudioHandler();
           await audioHandlerRef.current.initialize();
@@ -239,11 +231,14 @@ export function RealtimeChat({
           await clientRef.current?.sendAudio(chunk);
         });
         setIsRecording(true);
-      } catch (error) {
+        setStatus("Recording...");
+      } catch (error: any) {
         console.error("Failed to start recording:", error);
+        setStatus(`Failed to start recording: ${error.message}`);
       }
     } else if (audioHandlerRef.current) {
       try {
+        setStatus("Stopping recording...");
         audioHandlerRef.current.stopRecording();
         if (!useVAD) {
           const inputAudio = await clientRef.current?.commitAudio();
@@ -251,12 +246,15 @@ export function RealtimeChat({
           await clientRef.current?.generateResponse();
         }
         setIsRecording(false);
-      } catch (error) {
+        setStatus("");
+      } catch (error: any) {
         console.error("Failed to stop recording:", error);
+        setStatus(`Failed to stop recording: ${error.message}`);
       }
     }
   };
 
+  // 初始化 useEffect
   useEffect(() => {
     // 防止重复初始化
     if (initRef.current) return;
@@ -270,8 +268,8 @@ export function RealtimeChat({
       await toggleRecording();
     };
 
-    initAudioHandler().catch((error) => {
-      setStatus(error);
+    initAudioHandler().catch((error: any) => {
+      setStatus(`Initialization error: ${error.message}`);
       console.error(error);
     });
 
@@ -284,6 +282,7 @@ export function RealtimeChat({
     };
   }, []);
 
+  // 频率数据 useEffect
   useEffect(() => {
     let animationFrameId: number;
 
@@ -308,7 +307,7 @@ export function RealtimeChat({
     };
   }, [isConnected, isRecording]);
 
-  // update session params
+  // 更新 session params
   useEffect(() => {
     clientRef.current?.configure({ voice });
   }, [voice]);
@@ -316,6 +315,7 @@ export function RealtimeChat({
     clientRef.current?.configure({ temperature });
   }, [temperature]);
 
+  // 关闭组件
   const handleClose = async () => {
     onClose?.();
     if (isRecording) {
@@ -333,13 +333,33 @@ export function RealtimeChat({
       >
         <VoicePrint frequencies={frequencies} isActive={isRecording} />
       </div>
-
+      {isConnecting && <Loading />} {/* 显示加载状态 */}
+      <div className={styles["message-list"]}>
+        {messages.map((msg, index) => (
+          <div
+            key={index}
+            className={`mb-2 ${
+              msg.role === "user" ? "text-right" : "text-left"
+            }`}
+          >
+            <div
+              className={`inline-block rounded-lg py-2 px-4 ${
+                msg.role === "user"
+                  ? "bg-blue-500 text-white rounded-br-none"
+                  : "bg-gray-200 rounded-bl-none"
+              }`}
+            >
+              {msg.content}
+            </div>
+          </div>
+        ))}
+      </div>
       <div className={styles["bottom-icons"]}>
         <div>
           <IconButton
             icon={isRecording ? <VoiceIcon /> : <VoiceOffIcon />}
             onClick={toggleRecording}
-            disabled={!isConnected}
+            disabled={!isConnected || isConnecting} // 连接中禁用按钮
             shadow
             bordered
           />
