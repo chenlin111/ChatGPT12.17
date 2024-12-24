@@ -317,6 +317,7 @@ const openaiModels = [
 ];
 
 const googleModels = [
+  "gemini-2.0-flash-exp",
   "gemini-1.0-pro",
   "gemini-1.5-pro-latest",
   "gemini-1.5-flash-latest",
@@ -394,7 +395,7 @@ const iflytekModels = [
   "4.0Ultra",
 ];
 
-const xAIModes = ["grok-beta"];
+const xAIModes = ["grok-beta","Grok-2-Vision-1212"];
 
 const chatglmModels = [
   "glm-4-plus",
